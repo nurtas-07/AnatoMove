@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AnatoMove — тренер, который видит твои мышцы</title>
+  <meta name="description" content="Веб-тренер с камерой вместо джойстика: считает повторы, подсвечивает работающие мышцы и подсказывает, как исправить технику.">
+  <meta name="theme-color" content="#161a22">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 6 Q52 32 32 58 Q12 32 32 6Z' fill='%23ff4f6d'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Onest:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body data-screen="intro">
+
+  <main id="stage" aria-hidden="true">
+    <video id="cam" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </main>
+
+  <!-- Старт: единственный экран, где нужен клик — браузер просит разрешение на камеру и звук -->
+  <section class="panel" data-panel="intro">
+    <div class="intro">
+      <div class="intro-text">
+        <p class="brand">AnatoMove</p>
+        <h1>Тренер, который видит твои мышцы</h1>
+        <p class="lead">Камера следит за движением, считает повторы и подсказывает, что поправить в технике. Работающие мышцы подсвечиваются прямо на тебе.</p>
+        <ol class="steps">
+          <li>Поставь ноутбук или телефон на уровне пояса и отойди на 2–3 метра.</li>
+          <li>Чтобы выбрать пункт, подними руку над головой и подержи секунду.</li>
+          <li>Три упражнения: приседания, разведение рук, подъём коленей.</li>
+        </ol>
+        <button id="start" class="btn" type="button">Включить камеру</button>
+        <p class="note">Видео обрабатывается прямо в браузере и никуда не отправляется.</p>
+        <p id="intro-error" class="error" role="alert" hidden></p>
+      </div>
+      <figure class="intro-map" id="intro-map" aria-hidden="true"></figure>
+    </div>
+  </section>
+
+  <section class="panel" data-panel="loading">
+    <p class="loading">Загружаю модель распознавания движений…</p>
+  </section>
+
+  <!-- Меню: управление только жестами -->
+  <section class="panel" data-panel="menu">
+    <header class="menu-head">
+      <p class="brand">AnatoMove</p>
+      <p class="menu-title">Подними руку над головой и подержи секунду</p>
+      <p class="status" id="menu-status" aria-live="polite"></p>
+    </header>
+    <button class="gesture" data-side="left" data-action="history" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l9 8M24 20l-8-15"/></svg>
+      <span class="g-label">Мой прогресс</span>
+      <span class="g-hand">Левая рука вверх</span>
+    </button>
+    <button class="gesture" data-side="right" data-action="start" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-9 8M24 20l8-15"/></svg>
+      <span class="g-label">Начать тренировку</span>
+      <span class="g-hand">Правая рука вверх</span>
+    </button>
+  </section>
+
+  <!-- Подготовка к упражнению -->
+  <section class="panel" data-panel="transition">
+    <div class="sheet tr">
+      <p class="tr-step" id="tr-step"></p>
+      <h2 id="tr-name"></h2>
+      <p class="tr-how" id="tr-how"></p>
+      <p class="tr-sub">Работают мышцы</p>
+      <ul class="muscle-list" id="tr-muscles"></ul>
+      <p class="tr-wait" id="tr-wait" aria-live="polite"></p>
+    </div>
+    <p class="countdown" id="tr-count" aria-live="assertive"></p>
+  </section>
+
+  <!-- Упражнение -->
+  <section class="panel" data-panel="exercise">
+    <header class="hud">
+      <div class="hud-ex">
+        <p id="hud-step"></p>
+        <h2 id="hud-name"></h2>
+      </div>
+      <div class="hud-count" aria-live="polite">
+        <span class="hud-num" id="hud-count">0</span>
+        <span class="hud-of" id="hud-target"></span>
+        <span class="hud-clean" id="hud-clean"></span>
+      </div>
+    </header>
+    <div class="hint" id="hint" aria-live="assertive">
+      <p class="hint-kind" id="hint-kind"></p>
+      <p class="hint-what" id="hint-what"></p>
+      <p class="hint-fix" id="hint-fix"></p>
+    </div>
+    <p class="skip" id="skip">Обе руки высоко над головой на 2 секунды — пропустить упражнение</p>
+  </section>
+
+  <!-- Итоги -->
+  <section class="panel" data-panel="summary">
+    <div class="sheet summary">
+      <div class="sum-main">
+        <p class="tr-step">Тренировка завершена</p>
+        <p class="sum-score"><span id="sum-score"></span> <span id="sum-score-unit"></span></p>
+        <p class="sum-record" id="sum-record"></p>
+        <dl class="sum-stats">
+          <div><dt>Техника</dt><dd id="sum-tech"></dd></div>
+          <div><dt>Чистые повторы</dt><dd id="sum-reps"></dd></div>
+          <div><dt>Время</dt><dd id="sum-time"></dd></div>
+        </dl>
+        <ol class="sum-ex" id="sum-ex"></ol>
+      </div>
+      <figure class="sum-anatomy">
+        <div class="sum-map" id="sum-map"></div>
+        <figcaption>
+          <ul class="load-list" id="sum-muscles"></ul>
+          <p class="sum-notes" id="sum-notes"></p>
+        </figcaption>
+      </figure>
+    </div>
+    <button class="gesture" data-side="left" data-action="menu" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l9 8M24 20l-8-15"/></svg>
+      <span class="g-label">В меню</span>
+      <span class="g-hand">Левая рука вверх</span>
+    </button>
+    <button class="gesture" data-side="right" data-action="start" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-9 8M24 20l8-15"/></svg>
+      <span class="g-label">Ещё раз</span>
+      <span class="g-hand">Правая рука вверх</span>
+    </button>
+  </section>
+
+  <!-- Прогресс -->
+  <section class="panel" data-panel="history">
+    <div class="sheet history">
+      <h2>Мой прогресс</h2>
+      <p class="hist-best" id="hist-best"></p>
+      <div class="hist-chart" id="hist-chart"></div>
+      <ol class="hist-list" id="hist-list"></ol>
+    </div>
+    <button class="gesture" data-side="right" data-action="menu" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-9 8M24 20l8-15"/></svg>
+      <span class="g-label">Назад в меню</span>
+      <span class="g-hand">Правая рука вверх</span>
+    </button>
+  </section>
+
+  <button id="mute" class="mute" type="button" aria-pressed="false" aria-label="Выключить звук">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9h4l5-4v14l-5-4H4z"/><path class="on" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/><path class="off" d="M16 9l6 6M22 9l-6 6"/></svg>
+  </button>
+
+  <pre id="debug" class="debug" hidden></pre>
+</body>
+</html>
