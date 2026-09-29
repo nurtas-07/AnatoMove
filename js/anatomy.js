@@ -11,6 +11,11 @@ export const MUSCLES = {
   traps:     { ru: 'Трапециевидная мышца', la: 'm. trapezius' },
   iliopsoas: { ru: 'Подвздошно-поясничная мышца', la: 'm. iliopsoas' },
   abs:       { ru: 'Прямая мышца живота', la: 'm. rectus abdominis' },
+  triceps:   { ru: 'Трёхглавая мышца плеча', la: 'm. triceps brachii' },
+  obliques:  { ru: 'Наружная косая мышца живота', la: 'm. obliquus externus abdominis' },
+  ql:        { ru: 'Квадратная мышца поясницы', la: 'm. quadratus lumborum' },
+  gmed:      { ru: 'Средняя ягодичная мышца', la: 'm. gluteus medius' },
+  calves:    { ru: 'Икроножная мышца', la: 'm. gastrocnemius' },
 };
 
 const RGB = { muscle: '255, 79, 109', fibre: '255, 196, 206', fault: '255, 212, 59', bone: '241, 235, 224' };
@@ -32,9 +37,11 @@ function shapes(id, S) {
   const ms = mid(ls, rs), mh = mid(lh, rh);
   const up = { x: (ms.x - mh.x) / (dist(ms, mh) || 1), y: (ms.y - mh.y) / (dist(ms, mh) || 1) };
   const sides = [
-    ['left', ls, lh, S[L.L_KNEE], S[L.L_ELBOW]],
-    ['right', rs, rh, S[L.R_KNEE], S[L.R_ELBOW]],
+    ['left', ls, lh, S[L.L_KNEE], S[L.L_ELBOW], S[L.L_ANKLE]],
+    ['right', rs, rh, S[L.R_KNEE], S[L.R_ELBOW], S[L.R_ANKLE]],
   ];
+  const across = { x: (rs.x - ls.x) / (sw || 1), y: (rs.y - ls.y) / (sw || 1) }; // от левого плеча к правому
+  const outward = (side) => (side === 'left' ? -1 : 1);
   const out = [];
 
   switch (id) {
@@ -77,6 +84,35 @@ function shapes(id, S) {
       break;
     case 'abs':
       out.push({ a: lerp(mh, ms, 0.08), b: lerp(mh, ms, 0.78), w: sw * 0.34, side: 'center' });
+      break;
+    case 'triceps':
+      for (const [side, s, , , e] of sides) if (e) out.push({ a: lerp(s, e, 0.3), b: lerp(s, e, 0.95), w: sw * 0.2, side });
+      break;
+    case 'obliques': {
+      // Волокна идут от нижних рёбер вниз и к центру.
+      const center = lerp(mh, ms, 0.45);
+      for (const [side, s, h] of sides) {
+        out.push({ a: lerp(lerp(s, h, 0.42), center, 0.12), b: add(lerp(h, mh, 0.35), up, sw * 0.08), w: sw * 0.26, side });
+      }
+      break;
+    }
+    case 'ql':
+      for (const [side, , h] of sides) {
+        out.push({
+          a: add(lerp(h, mh, 0.5), up, sw * 0.1),
+          b: add(lerp(mh, ms, 0.42), across, outward(side) * sw * 0.18),
+          w: sw * 0.13, side,
+        });
+      }
+      break;
+    case 'gmed':
+      for (const [side, , h] of sides) {
+        const outDir = { x: (h.x - mh.x) / (dist(h, mh) || 1), y: 0 };
+        out.push({ a: add(add(h, outDir, sw * 0.18), up, sw * 0.32), b: add(h, outDir, sw * 0.2), w: sw * 0.2, side });
+      }
+      break;
+    case 'calves':
+      for (const [side, , , k, , an] of sides) if (k && an) out.push({ a: lerp(k, an, 0.08), b: lerp(k, an, 0.62), w: sw * 0.24, side });
       break;
   }
   return out;
@@ -279,12 +315,17 @@ const FRONT = {
   iliopsoas: pair('<ellipse cx="97" cy="238" rx="6" ry="17" transform="rotate(-22 97 238)"/>'),
   quads: pair('<ellipse cx="86" cy="302" rx="14" ry="44"/>'),
   adductors: pair('<ellipse cx="101" cy="284" rx="5.5" ry="28" transform="rotate(-8 101 284)"/>'),
+  obliques: pair('<ellipse cx="83" cy="172" rx="8.5" ry="28" transform="rotate(12 83 172)"/>'),
 };
 const BACK = {
   traps: '<path d="M110 70 L152 96 L110 172 L68 96 Z"/>',
   deltoids: pair('<ellipse cx="68" cy="108" rx="14" ry="21" transform="rotate(14 68 108)"/>'),
   erectors: pair('<rect x="97" y="140" width="9" height="98" rx="4.5"/>'),
   glutes: pair('<ellipse cx="93" cy="254" rx="17" ry="19"/>'),
+  gmed: pair('<ellipse cx="85" cy="230" rx="10" ry="7" transform="rotate(-18 85 230)"/>'),
+  ql: pair('<ellipse cx="89" cy="212" rx="5" ry="14"/>'),
+  triceps: pair('<ellipse cx="58.5" cy="150" rx="7.5" ry="26" transform="rotate(9 58.5 150)"/>'),
+  calves: pair('<ellipse cx="88" cy="382" rx="11" ry="25"/>'),
 };
 
 export function bodyMapSVG(load) {
