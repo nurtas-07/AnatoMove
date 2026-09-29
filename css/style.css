@@ -387,14 +387,15 @@ body[data-screen="intro"] .mute, body[data-screen="loading"] .mute { display: no
   .debug { top: 38%; bottom: auto; font-size: 10px; opacity: 0.85; }
   /* Экраны с жестом «обе руки»: таблетка внизу, карточки рук над ней */
   .gesture--both {
-    left: var(--pad); right: calc(var(--pad) + 3.4rem); transform: none;
+    left: var(--pad); right: calc(var(--pad) + 3.4rem); transform: none; width: auto;
     bottom: calc(var(--pad) + var(--safe-b)); padding: 0.55rem 1rem;
+    grid-template-columns: auto 1fr; gap: 0 0.8rem;
   }
   .gesture--both .g-icon { width: 2rem; height: 2rem; }
   .panel:has(.gesture--both) .gesture:not(.gesture--both) { bottom: calc(var(--pad) + var(--safe-b) + 4.2rem); }
   .g-pick { font-size: 1rem; }
   .catalog {
-    top: calc(var(--pad) + var(--safe-t) + 6.5rem); transform: translateX(-50%);
+    top: calc(var(--pad) + var(--safe-t) + 8.4rem); transform: translateX(-50%);
     width: calc(100% - 2 * var(--pad)); grid-template-columns: 1fr 1fr; gap: 0.5rem;
   }
   .cat-item { padding: 0.65rem 0.75rem; border-radius: 14px; }
