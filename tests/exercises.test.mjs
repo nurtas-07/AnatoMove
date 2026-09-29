@@ -266,6 +266,9 @@ const faultsOf = (ev) => ev.filter((e) => e.type === 'fault').map((e) => e.code)
   const ex = new Squat();
   const rep = [ramp(0.8, 'depth', 0, 1), stand(0.3, { depth: 1 }), ramp(0.8, 'depth', 1, 0), stand(0.4)];
   run(ex, [stand(1), ...rep, ...rep, ...rep]);
+  const ex2 = new Squat();
+  run(ex2, [stand(1), ramp(0.8, 'depth', 0, 1)]);
+  check('в середине повтора упражнение занято (жест пропуска не копится)', ex2.busy === true && new Squat().busy === false);
   check('серия: 3 чистых подряд', ex.streak === 3 && ex.bestStreak === 3, `streak=${ex.streak}`);
 }
 

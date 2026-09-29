@@ -58,7 +58,8 @@ body[data-screen="menu"] [data-panel="menu"],
 body[data-screen="transition"] [data-panel="transition"],
 body[data-screen="exercise"] [data-panel="exercise"],
 body[data-screen="summary"] [data-panel="summary"],
-body[data-screen="history"] [data-panel="history"] { display: block; }
+body[data-screen="history"] [data-panel="history"],
+body[data-screen="catalog"] [data-panel="catalog"] { display: block; }
 
 .brand { font: italic 500 1.5rem/1 var(--serif); color: var(--bone); }
 .sheet {
@@ -130,6 +131,40 @@ svg text { fill: var(--bone-3); font: 500 15px var(--sans); }
 }
 .gesture[data-side="left"] { left: calc(var(--pad) + env(safe-area-inset-left, 0px)); }
 .gesture[data-side="right"] { right: calc(var(--pad) + env(safe-area-inset-right, 0px)); }
+/* Обе руки — горизонтальная «таблетка» снизу по центру, заполняется слева направо */
+.gesture--both {
+  top: auto; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--pad) + var(--safe-b) + 0.4rem);
+  width: auto; min-height: 0;
+  grid-template-columns: auto auto; grid-template-rows: auto auto;
+  justify-items: start; align-items: center; column-gap: 0.9rem; row-gap: 0;
+  padding: 0.7rem 1.5rem 0.7rem 1.1rem;
+  text-align: left; border-radius: 999px;
+}
+.gesture--both .g-icon { grid-row: span 2; width: 2.4rem; height: 2.4rem; }
+.gesture.gesture--both::before { transform-origin: left; transform: scaleX(var(--hold)); }
+.g-pick { font: italic 500 1.2rem/1.2 var(--serif); }
+.gesture.chosen { animation: chosen 0.45s ease-out; }
+@keyframes chosen { from { box-shadow: 0 0 0 0 rgba(255, 79, 109, 0.7); } to { box-shadow: 0 0 0 20px rgba(255, 79, 109, 0); } }
+
+/* ─── Каталог упражнений */
+.catalog {
+  position: absolute; left: 50%; top: 53%; transform: translate(-50%, -50%);
+  width: min(54rem, calc(100% - 2 * (var(--pad) + 14rem)));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.8rem;
+}
+.cat-item {
+  display: grid; gap: 0.25rem; padding: 1rem 1.15rem; cursor: pointer;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--line); border-radius: 18px;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.cat-item.current { border-color: var(--muscle); background: rgba(64, 20, 33, 0.86); transform: scale(1.03); }
+.cat-name { font: 600 1.45rem/1.1 var(--serif); }
+.cat-la { font: italic 500 1rem/1.25 var(--serif); color: var(--muscle); }
+.cat-meta { font-size: 0.82rem; color: var(--bone-3); }
 .gesture::before {
   content: ""; position: absolute; inset: 0; z-index: -1;
   background: linear-gradient(to top, #c42a4b, #e8445f);
@@ -167,6 +202,8 @@ svg text { fill: var(--bone-3); font: 500 15px var(--sans); }
 .muscle-list { display: grid; gap: 0.35rem; }
 .muscle-list li { display: grid; }
 .muscle-list i, .load-list i { font: italic 500 1.12rem/1.2 var(--serif); color: var(--muscle); }
+.tr-fact { font-size: 0.9rem; line-height: 1.5; color: var(--bone-2); padding-top: 0.7rem; border-top: 1px solid var(--line); }
+.tr-fact span:first-child { color: var(--muscle); font-weight: 600; }
 .tr-wait { color: var(--sulfur); }
 .tr-wait:empty { display: none; }
 .countdown {
@@ -188,6 +225,8 @@ svg text { fill: var(--bone-3); font: 500 15px var(--sans); }
 .hud-num { font: 600 clamp(4.2rem, 10vw, 7.5rem)/0.82 var(--serif); font-variant-numeric: lining-nums tabular-nums; }
 .hud-of { color: var(--bone-2); font-size: 1rem; margin-top: 0.3rem; }
 .hud-clean { color: var(--muscle); font-weight: 600; font-size: 0.95rem; }
+.hud-streak { font: italic 500 1.2rem/1.2 var(--serif); margin-top: 0.1rem; }
+.hud-streak:empty { display: none; }
 .hud-count.flash-good .hud-num { animation: good 0.5s ease-out; }
 .hud-count.flash-bad .hud-num { animation: bad 0.5s ease-out; }
 @keyframes good { 0% { color: var(--muscle); transform: scale(1.14); } 100% { color: var(--bone); transform: scale(1); } }
@@ -266,6 +305,9 @@ svg text { fill: var(--bone-3); font: 500 15px var(--sans); }
 .history h2 { font: 600 2.4rem/1 var(--serif); }
 .hist-best { color: var(--bone-2); }
 .hist-chart { color: var(--bone-2); }
+.hist-sub { font-size: 0.85rem; color: var(--bone-3); margin-bottom: 0.3rem; }
+.h-when { display: grid; }
+.h-when span { font-size: 0.8rem; color: var(--bone-3); }
 .hist-chart:empty { display: none; }
 .hist-chart svg { width: 100%; height: auto; display: block; }
 .hist-list { display: grid; }
@@ -298,6 +340,16 @@ body[data-screen="intro"] .mute, body[data-screen="loading"] .mute { display: no
   font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace;
   white-space: pre; pointer-events: none;
 }
+
+/* ─── Стоп-кадры ошибок в итогах */
+.snaps { grid-column: 1 / -1; display: grid; gap: 0.8rem; padding-top: 1.1rem; border-top: 1px solid var(--line); }
+.snaps[hidden] { display: none; }
+.snaps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: 1rem; }
+.snap { display: grid; gap: 0.5rem; align-content: start; }
+.snap img { width: 100%; height: auto; display: block; border-radius: 14px; border: 1px solid rgba(255, 212, 59, 0.45); }
+.snap figcaption { display: grid; gap: 0.15rem; font-size: 0.85rem; line-height: 1.35; color: var(--bone-2); }
+.snap-ex { font-size: 0.78rem; color: var(--bone-3); }
+.snap b { color: var(--sulfur); font-weight: 600; }
 
 @media (max-width: 1100px) {
   [data-panel="summary"] .summary { grid-template-columns: 1fr; }
@@ -333,6 +385,23 @@ body[data-screen="intro"] .mute, body[data-screen="loading"] .mute { display: no
   .hint { bottom: calc(var(--pad) + var(--safe-b) + 2.8rem); }
   .skip { font-size: 0.75rem; left: var(--pad); transform: none; max-width: calc(100% - var(--pad) - 4rem); text-align: left; }
   .debug { top: 38%; bottom: auto; font-size: 10px; opacity: 0.85; }
+  /* Экраны с жестом «обе руки»: таблетка внизу, карточки рук над ней */
+  .gesture--both {
+    left: var(--pad); right: calc(var(--pad) + 3.4rem); transform: none;
+    bottom: calc(var(--pad) + var(--safe-b)); padding: 0.55rem 1rem;
+  }
+  .gesture--both .g-icon { width: 2rem; height: 2rem; }
+  .panel:has(.gesture--both) .gesture:not(.gesture--both) { bottom: calc(var(--pad) + var(--safe-b) + 4.2rem); }
+  .g-pick { font-size: 1rem; }
+  .catalog {
+    top: calc(var(--pad) + var(--safe-t) + 6.5rem); transform: translateX(-50%);
+    width: calc(100% - 2 * var(--pad)); grid-template-columns: 1fr 1fr; gap: 0.5rem;
+  }
+  .cat-item { padding: 0.65rem 0.75rem; border-radius: 14px; }
+  .cat-item.current { transform: none; }
+  .cat-name { font-size: 1.1rem; }
+  .cat-la { font-size: 0.85rem; }
+  .cat-meta, .tr-fact { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

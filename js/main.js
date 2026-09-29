@@ -1,7 +1,7 @@
 // AnatoMove — сценарий приложения: экраны, управление жестами, цикл распознавания, итоги.
 
 import { L, clamp } from './geometry.js';
-import { makeWorkout, SETUP, Squat } from './exercises.js';
+import { CATALOG, makeWorkout, SETUP, Squat } from './exercises.js';
 import {
   MUSCLES, drawBones, drawJoints, drawMuscles, drawFaultJoints, drawLabels, drawHandHold, bodyMapSVG,
 } from './anatomy.js';
@@ -10,21 +10,27 @@ import * as sound from './voice.js';
 
 const $ = (s) => document.querySelector(s);
 const DEBUG = new URLSearchParams(location.search).has('debug');
-const HOLD_SEC = 1.0;        // сколько держать руку, чтобы выбрать пункт
-const SKIP_SEC = 2.2;        // сколько держать обе руки, чтобы пропустить упражнение
+const HOLD_SEC = 1.0;        // сколько держать одну руку, чтобы выбрать пункт
+const BOTH_SEC = 1.3;        // обе руки — чуть дольше, чтобы не спутать с подъёмом одной
+const SKIP_SEC = 2.0;        // руки скрещены на груди во время упражнения — пропуск
 const HINT_MS = 3800;        // сколько висит подсказка-поправка
 const SETUP_DELAY_MS = 400;  // не мигать подсказкой о положении из-за одного кадра
+const MAX_SNAPS = 6;         // стоп-кадров ошибок за тренировку
+const SNAP_W = 240, SNAP_H = 320;
+const CAM_FILTER = 'grayscale(1) contrast(1.08) brightness(0.72)';
 const HISTORY_KEY = 'anatomove.history.v1';
 
 const stage = $('#stage');
 const video = $('#cam');
 const canvas = $('#overlay');
 const ctx = canvas.getContext('2d');
-const probe = new Squat(); // только чтобы в меню проверить, виден ли человек целиком
+const probe = new Squat();                 // только чтобы в меню проверить, виден ли человек целиком
+const INFO = CATALOG.map((C) => new C());  // названия, мышцы и цели для каталога
 
 const st = {
   screen: 'intro',
   detector: null,
+  looping: false,
   P: null,            // точки в пикселях кадра камеры
   S: [],              // те же точки на экране (зеркально)
   frame: { w: 1280, h: 720 },
@@ -33,6 +39,9 @@ const st = {
   lastT: 0,
   holds: { left: 0, right: 0, both: 0 },
   lock: false,        // после выбора ждём, пока человек опустит руки
+  crossLock: false,   // после пропуска ждём, пока человек разведёт руки
+  plan: null,         // { ids, title } — что запущено: полная тренировка или одно упражнение
+  cat: 0,             // выбранное упражнение в каталоге
   workout: [],
   idx: 0,
   ex: null,
@@ -43,7 +52,12 @@ const st = {
   hintUntil: 0,
   setup: null,
   setupSince: 0,
-  texts: {},          // кэш текстов, чтобы не трогать DOM каждый кадр
+  snaps: [],          // стоп-кадры ошибок
+  snapKeys: new Set(),
+  snapPending: [],
+  buffer: [],         // последние кадры упражнения — из них выбираем кадр для стоп-кадра
+  bufferTick: 0,
+  texts: {},
   debugAt: 0,
 };
 
@@ -60,6 +74,7 @@ const setText = (sel, text) => {
   st.texts[sel] = text;
   $(sel).textContent = text;
 };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmtDate = (ms) => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(ms);
 const fmtDuration = (s) => (s >= 60 ? `${Math.floor(s / 60)} мин ${s % 60} с` : `${s} с`);
 
@@ -81,13 +96,20 @@ function go(screen) {
 }
 
 const ACTIONS = {
-  start: () => startWorkout(),
+  start: () => startPlan({ ids: null, title: 'Полная тренировка' }),
+  catalog: () => showCatalog(),
   history: () => showHistory(),
   menu: () => go('menu'),
+  next: () => { st.cat = (st.cat + 1) % INFO.length; renderCatalog(); },
+  pick: () => startPlan({ ids: [INFO[st.cat].id], title: INFO[st.cat].name }),
+  again: () => startPlan(st.plan),
 };
 
 function activate(el) {
   sound.tone('select');
+  el.classList.remove('chosen');
+  void el.offsetWidth;
+  el.classList.add('chosen');
   ACTIONS[el.dataset.action]?.();
 }
 
@@ -98,6 +120,13 @@ document.querySelectorAll('.gesture').forEach((el) => {
   });
 });
 
+$('#catalog').addEventListener('click', (e) => {
+  const item = e.target.closest('[data-i]');
+  if (!item) return;
+  st.cat = Number(item.dataset.i);
+  renderCatalog();
+});
+
 $('#mute').addEventListener('click', () => {
   const m = !sound.isMuted();
   sound.setMuted(m);
@@ -105,23 +134,39 @@ $('#mute').addEventListener('click', () => {
   $('#mute').setAttribute('aria-label', m ? 'Включить звук' : 'Выключить звук');
 });
 
+document.addEventListener('visibilitychange', () => { if (document.hidden) sound.stopSpeech(); });
+
 // ─── Запуск
 $('#start').addEventListener('click', boot);
-$('#intro-map').innerHTML = bodyMapSVG({ quads: 1, glutes: 0.85, adductors: 0.5, deltoids: 0.7, traps: 0.3, iliopsoas: 0.75, abs: 0.45, erectors: 0.4 });
+$('#intro-map').innerHTML = bodyMapSVG({
+  quads: 1, glutes: 0.85, adductors: 0.5, deltoids: 0.7, traps: 0.3, iliopsoas: 0.75, abs: 0.45,
+  erectors: 0.4, triceps: 0.55, obliques: 0.6, ql: 0.35, gmed: 0.5, calves: 0.65,
+});
+
+function showIntroError(text) {
+  $('#intro-error').textContent = text;
+  $('#intro-error').hidden = !text;
+}
 
 async function boot() {
   $('#start').disabled = true;
-  $('#intro-error').hidden = true;
+  showIntroError('');
   sound.initAudio();
   go('loading');
   try {
     video.srcObject?.getTracks().forEach((t) => t.stop());
-    await startCamera(video);
+    const stream = await startCamera(video);
+    // Камеру отключили или её забрало другое приложение — возвращаемся на старт с понятным текстом.
+    stream?.getVideoTracks?.()[0]?.addEventListener('ended', () => {
+      showIntroError('Камера отключилась. Проверь подключение и нажми кнопку ещё раз.');
+      $('#start').disabled = false;
+      go('intro');
+    });
     fitView();
-    st.detector = await createPoseDetector();
+    if (!st.detector) st.detector = await createPoseDetector();
     await document.fonts?.ready;
     go('menu');
-    requestAnimationFrame(loop);
+    if (!st.looping) { st.looping = true; requestAnimationFrame(loop); }
   } catch (e) {
     console.error(e);
     const messages = {
@@ -130,8 +175,7 @@ async function boot() {
       'no-camera-api': 'Браузер не даёт доступ к камере. Открой ссылку в Chrome, Edge или Safari по https.',
       model: 'Не загрузилась модель распознавания. Проверь интернет и нажми кнопку ещё раз.',
     };
-    $('#intro-error').textContent = messages[e.code] || 'Не получилось запуститься. Обнови страницу и попробуй снова.';
-    $('#intro-error').hidden = false;
+    showIntroError(messages[e.code] || 'Не получилось запуститься. Обнови страницу и попробуй снова.');
     $('#start').disabled = false;
     go('intro');
   }
@@ -161,12 +205,13 @@ function toScreen(P) {
 // ─── Главный цикл
 function loop() {
   requestAnimationFrame(loop);
-  if (!st.detector || video.readyState < 2) return;
+  if (!st.detector || video.readyState < 2 || st.screen === 'intro') return;
   if (video.currentTime === st.lastVideoTime) return; // новый кадр ещё не пришёл
   st.lastVideoTime = video.currentTime;
 
   const now = performance.now();
-  const dt = st.lastT ? clamp((now - st.lastT) / 1000, 0, 0.1) : 1 / 30;
+  // До 0,25 с: на слабом устройстве (4–10 кадров/с) удержание жеста всё равно длится честную секунду.
+  const dt = st.lastT ? clamp((now - st.lastT) / 1000, 0, 0.25) : 1 / 30;
   st.lastT = now;
   if (video.videoWidth !== st.frame.w || video.videoHeight !== st.frame.h) fitView();
 
@@ -179,20 +224,23 @@ function loop() {
 
   step(now, dt);
   render(now);
+  if (st.screen === 'exercise') bufferFrame(now);
+  if (st.snapPending.length) takeSnapshots(now);
   if (DEBUG && now - st.debugAt > 120) { st.debugAt = now; showDebug(dt); }
 }
 
 function step(now, dt) {
   switch (st.screen) {
-    case 'menu': menuStep(); gestures(dt, { sides: true }); break;
+    case 'menu': menuStep(); gestures(dt); break;
+    case 'catalog':
     case 'history':
-    case 'summary': gestures(dt, { sides: true }); break;
+    case 'summary': gestures(dt); break;
     case 'transition': transitionStep(dt); break;
-    case 'exercise': exerciseStep(now, dt); gestures(dt, { both: true }); break;
+    case 'exercise': exerciseStep(now, dt); gestures(dt, { skip: true }); break;
   }
 }
 
-// ─── Управление жестами: рука над головой = выбор пункта на этой стороне экрана.
+// ─── Управление жестами: рука над головой — пункт на этой стороне экрана, обе руки — пункт по центру.
 function handsUp(P, margin = 0) {
   const none = { left: false, right: false };
   if (!P) return none;
@@ -203,7 +251,21 @@ function handsUp(P, margin = 0) {
   return { left: up(L.L_WRIST), right: up(L.R_WRIST) };
 }
 
-function gestures(dt, { sides = false, both = false }) {
+// Руки скрещены на груди: левое запястье ушло за правое, обе кисти на уровне корпуса.
+function armsCrossed(P) {
+  if (!P) return false;
+  const need = [L.L_WRIST, L.R_WRIST, L.L_SHOULDER, L.R_SHOULDER, L.L_HIP, L.R_HIP];
+  if (need.some((i) => (P[i].visibility ?? 0) < 0.5)) return false;
+  const sw = Math.abs(P[L.L_SHOULDER].x - P[L.R_SHOULDER].x);
+  const top = Math.min(P[L.L_SHOULDER].y, P[L.R_SHOULDER].y) - 0.3 * sw;
+  const bottom = Math.max(P[L.L_HIP].y, P[L.R_HIP].y);
+  const lw = P[L.L_WRIST], rw = P[L.R_WRIST];
+  const inBand = (w) => w.y > top && w.y < bottom;
+  // В кадре (не зеркальном) левая рука человека обычно правее правой; скрестил — наоборот.
+  return lw.x < rw.x - 0.1 * sw && inBand(lw) && inBand(rw);
+}
+
+function gestures(dt, { skip = false } = {}) {
   const h = handsUp(st.P);
   if (!h.left && !h.right) st.lock = false;
   const grow = (key, on, limit) => {
@@ -211,53 +273,84 @@ function gestures(dt, { sides = false, both = false }) {
     return st.holds[key] >= limit;
   };
 
-  if (sides) {
-    const panel = document.querySelector(`[data-panel="${st.screen}"]`);
-    for (const side of ['left', 'right']) {
-      const target = panel.querySelector(`.gesture[data-side="${side}"]`);
-      if (!target) { st.holds[side] = 0; continue; }
-      if (grow(side, h[side] && !(h.left && h.right), HOLD_SEC)) {
-        st.lock = true;
-        st.holds[side] = 0;
-        activate(target);
-        return;
-      }
-      target.style.setProperty('--hold', clamp(st.holds[side] / HOLD_SEC).toFixed(3));
-    }
-  }
-  if (both) {
-    // Для пропуска руки должны быть заметно выше головы — чтобы не сработало при разведении рук.
-    const high = handsUp(st.P, 0.8);
-    if (grow('both', high.left && high.right, SKIP_SEC)) {
-      st.lock = true;
+  if (skip) {
+    // Пропуск — руки скрещены на груди 2 секунды. Такой позы нет ни в одном упражнении,
+    // а пока идёт повтор, удержание не копится (можно приседать и со скрещёнными руками).
+    const crossed = armsCrossed(st.P);
+    if (!crossed) st.crossLock = false;
+    const on = crossed && !st.crossLock && !st.ex.busy;
+    st.holds.both = on ? st.holds.both + dt : st.ex.busy ? 0 : Math.max(0, st.holds.both - dt * 2);
+    if (st.holds.both >= SKIP_SEC) {
       st.holds.both = 0;
+      st.crossLock = true; // следующее упражнение не пропустится, пока руки не разведены
       skipExercise();
     }
     $('#skip').style.setProperty('--hold', clamp(st.holds.both / SKIP_SEC).toFixed(3));
+    return;
+  }
+
+  const panel = document.querySelector(`[data-panel="${st.screen}"]`);
+  const both = h.left && h.right;
+  for (const side of ['left', 'right', 'both']) {
+    const target = panel?.querySelector(`.gesture[data-side="${side}"]`);
+    if (!target) { st.holds[side] = 0; continue; }
+    const on = side === 'both' ? both : h[side] && !both;
+    const limit = side === 'both' ? BOTH_SEC : HOLD_SEC;
+    if (grow(side, on, limit)) {
+      st.lock = true;
+      st.holds.left = st.holds.right = st.holds.both = 0;
+      target.style.setProperty('--hold', 0);
+      activate(target);
+      return;
+    }
+    target.style.setProperty('--hold', clamp(st.holds[side] / limit).toFixed(3));
   }
 }
 
-// ─── Меню
+// ─── Меню и каталог
 function menuStep() {
   const code = probe.positioning(st.P, st.frame, { lower: true, upper: true });
   setText('#menu-status', code ? `${SETUP[code].what}. ${SETUP[code].fix}.` : 'Вижу тебя целиком — можно начинать');
   $('#menu-status').classList.toggle('ok', !code);
 }
 
+function showCatalog() {
+  renderCatalog();
+  go('catalog');
+}
+
+function renderCatalog() {
+  $('#catalog').innerHTML = INFO.map((e, i) => {
+    const faults = Object.keys(e.FAULTS).length;
+    return `<li class="cat-item${i === st.cat ? ' current' : ''}" data-i="${i}" aria-current="${i === st.cat}">
+      <span class="cat-name">${esc(e.name)}</span>
+      <i class="cat-la" lang="la">${e.muscles.slice(0, 2).map((m) => MUSCLES[m].la).join(' · ')}</i>
+      <span class="cat-meta">${e.target} ${plural(e.target, ['повтор', 'повтора', 'повторов'])} · ${faults} ${plural(faults, ['ошибка', 'ошибки', 'ошибок'])} в разборе</span>
+    </li>`;
+  }).join('');
+  $('#cat-pick').textContent = INFO[st.cat].name;
+}
+
 // ─── Тренировка
-function startWorkout() {
-  st.workout = makeWorkout();
+function startPlan(plan) {
+  st.plan = plan;
+  st.workout = makeWorkout(plan.ids);
   st.idx = 0;
   st.startedAt = performance.now();
+  st.snaps = [];
+  st.snapKeys.clear();
   beginTransition();
 }
 
 function beginTransition() {
   const ex = st.workout[st.idx];
   st.ex = ex;
-  $('#tr-step').textContent = `Упражнение ${st.idx + 1} из ${st.workout.length}`;
+  st.buffer = [];
+  const step = st.workout.length > 1 ? `Упражнение ${st.idx + 1} из ${st.workout.length}` : 'Одно упражнение';
+  $('#tr-step').textContent = step;
   $('#tr-name').textContent = ex.name;
   $('#tr-how').textContent = ex.how;
+  $('#tr-fact').textContent = ex.fact;
   $('#tr-muscles').innerHTML = ex.muscles
     .map((id) => `<li><span>${MUSCLES[id].ru}</span><i lang="la">${MUSCLES[id].la}</i></li>`)
     .join('');
@@ -284,7 +377,7 @@ function transitionStep(dt) {
 
 function startExercise() {
   const ex = st.ex;
-  $('#hud-step').textContent = `Упражнение ${st.idx + 1} из ${st.workout.length}`;
+  $('#hud-step').textContent = st.workout.length > 1 ? `Упражнение ${st.idx + 1} из ${st.workout.length}` : 'Одно упражнение';
   $('#hud-name').textContent = ex.name;
   $('#hud-target').textContent = `из ${ex.target}`;
   updateCount();
@@ -317,11 +410,17 @@ function exerciseStep(now, dt) {
     if (e.type === 'fault') {
       showHint('fault', e);
       sound.say(e.say, { urgent: true, cooldown: 2500 });
+      const key = `${ex.id}:${e.code}`;
+      if (!st.snapKeys.has(key) && st.snaps.length + st.snapPending.length < MAX_SNAPS) {
+        st.snapKeys.add(key);
+        st.snapPending.push({ fault: e, exName: ex.name });
+      }
     } else if (e.type === 'rep') {
       updateCount(e.clean);
       if (e.clean) {
         sound.tone('good');
-        sound.say(String(e.total), { cooldown: 0 });
+        if (e.streak >= 5 && e.streak % 5 === 0) sound.say(`${e.streak} чистых подряд!`, { urgent: true, cooldown: 0 });
+        else sound.say(String(e.total), { cooldown: 0 });
         if (st.hint?.kind === 'fault') st.hintUntil = Math.min(st.hintUntil, now + 900);
       } else {
         sound.tone('bad');
@@ -339,6 +438,7 @@ function exerciseStep(now, dt) {
 
 function skipExercise() {
   st.ex.skipped = true;
+  st.snapPending = [];
   sound.say('Пропускаем', { urgent: true, cooldown: 0 });
   nextExercise();
 }
@@ -354,6 +454,7 @@ function updateCount(flash) {
   const ex = st.ex;
   $('#hud-count').textContent = ex.total;
   $('#hud-clean').textContent = `${ex.clean} ${plural(ex.clean, ['чистый', 'чистых', 'чистых'])}`;
+  $('#hud-streak').textContent = ex.streak >= 3 ? `серия ${ex.streak}` : '';
   if (flash === undefined) return;
   const box = $('.hud-count');
   box.classList.remove('flash-good', 'flash-bad');
@@ -377,24 +478,105 @@ function hideHint() {
   $('#hint').classList.remove('show');
 }
 
+// ─── Стоп-кадры ошибок
+// Каждый второй кадр упражнения кладём в короткий буфер (уменьшенным, вместе с подсветкой мышц).
+// При ошибке берём из последних 1,6 с кадр с максимальной нагрузкой — это пик движения, где ошибка видна лучше всего.
+function bodyCrop() {
+  const pts = st.S.filter(Boolean);
+  if (pts.length < 8) return null;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
+  const pad = (y1 - y0) * 0.16 + 24;
+  x0 -= pad; x1 += pad; y0 -= pad; y1 += pad * 0.6;
+  let w = x1 - x0, h = y1 - y0;
+  const ratio = SNAP_W / SNAP_H;
+  if (w / h > ratio) { const nh = w / ratio; y0 -= (nh - h) / 2; h = nh; } else { const nw = h * ratio; x0 -= (nw - w) / 2; w = nw; }
+  return { x: x0, y: y0, w, h };
+}
+
+function activationScore(act) {
+  let s = 0;
+  for (const v of Object.values(act)) s += typeof v === 'number' ? v : (v.left || 0) + (v.right || 0);
+  return s;
+}
+
+function bufferFrame(now) {
+  if (st.bufferTick++ % 2 && !st.snapPending.length) return;
+  const crop = bodyCrop();
+  if (!crop) return;
+  const f = st.buffer.length >= 14 ? st.buffer.shift() : { c: document.createElement('canvas') };
+  f.c.width = SNAP_W;
+  f.c.height = SNAP_H;
+  const g = f.c.getContext('2d');
+  const { cw, ch, scale, ox, oy } = st.view;
+  const k = SNAP_W / crop.w;
+  g.fillStyle = '#161a22';
+  g.fillRect(0, 0, SNAP_W, SNAP_H);
+  g.setTransform(k, 0, 0, k, -crop.x * k, -crop.y * k); // экранные координаты → кадр
+  g.save();
+  g.translate(cw, 0);
+  g.scale(-1, 1);
+  g.filter = CAM_FILTER;
+  g.drawImage(video, ox, oy, st.frame.w * scale, st.frame.h * scale);
+  g.restore();
+  g.filter = 'none';
+  g.drawImage(canvas, 0, 0, cw, ch);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  f.crop = crop;
+  f.k = k;
+  f.S = st.S.map((p) => p && { x: p.x, y: p.y });
+  f.score = activationScore(st.ex.activation);
+  f.t = now;
+  st.buffer.push(f);
+}
+
+function takeSnapshots(now) {
+  const recent = st.buffer.filter((f) => now - f.t < 1600);
+  if (!recent.length) { st.snapPending = []; return; }
+  const best = recent.reduce((a, b) => (b.score > a.score ? b : a));
+  for (const { fault, exName } of st.snapPending) {
+    const c = document.createElement('canvas');
+    c.width = SNAP_W;
+    c.height = SNAP_H;
+    const g = c.getContext('2d');
+    g.drawImage(best.c, 0, 0);
+    g.lineWidth = 2.5;
+    g.strokeStyle = 'rgba(255, 212, 59, 0.95)';
+    for (const j of new Set(fault.joints)) {
+      const p = best.S[j];
+      if (!p) continue;
+      g.beginPath();
+      g.arc((p.x - best.crop.x) * best.k, (p.y - best.crop.y) * best.k, 11, 0, Math.PI * 2);
+      g.stroke();
+    }
+    try {
+      st.snaps.push({ img: c.toDataURL('image/jpeg', 0.82), exName, what: fault.what, fix: fault.fix });
+    } catch (e) { console.warn('Стоп-кадр не сохранился', e); }
+  }
+  st.snapPending = [];
+}
+
 // ─── Итоги
 function finishWorkout() {
   const exs = st.workout;
   const total = exs.reduce((s, e) => s + e.total, 0);
   const clean = exs.reduce((s, e) => s + e.clean, 0);
-  const score = clean * 10 + (total - clean) * 4;
+  const bestStreak = exs.reduce((m, e) => Math.max(m, e.bestStreak), 0);
+  const score = clean * 10 + (total - clean) * 4 + bestStreak * 3;
   const tech = total ? Math.round((clean / total) * 100) : 0;
   const secs = Math.round((performance.now() - st.startedAt) / 1000);
 
   const history = loadHistory();
   const prevBest = history.reduce((m, h) => Math.max(m, h.score), 0);
-  saveHistory([{ date: Date.now(), score, tech, total, clean, secs }, ...history].slice(0, 30));
+  saveHistory([{ date: Date.now(), title: st.plan.title, score, tech, total, clean, bestStreak, secs }, ...history].slice(0, 30));
 
+  $('#sum-title').textContent = exs.length > 1 ? 'Тренировка завершена' : `${st.plan.title} — готово`;
   $('#sum-score').textContent = score;
   $('#sum-score-unit').textContent = plural(score, ['балл', 'балла', 'баллов']);
   $('#sum-record').textContent = score > prevBest && history.length ? `Новый рекорд — прошлый лучший результат ${prevBest}` : '';
   $('#sum-tech').textContent = `${tech}%`;
   $('#sum-reps').textContent = `${clean} из ${total}`;
+  $('#sum-streak').textContent = bestStreak;
   $('#sum-time').textContent = fmtDuration(secs);
 
   $('#sum-ex').innerHTML = exs.map((e) => {
@@ -408,14 +590,14 @@ function finishWorkout() {
       } else tip = e.total ? 'Без ошибок — чистая техника.' : '';
     }
     const num = e.skipped && !e.total ? '—' : `${e.clean} из ${e.total} чистых`;
-    return `<li><p class="se-head"><span>${e.name}</span><span class="se-num">${num}</span></p><p class="se-tip">${tip}</p></li>`;
+    return `<li><p class="se-head"><span>${esc(e.name)}</span><span class="se-num">${num}</span></p><p class="se-tip">${esc(tip)}</p></li>`;
   }).join('');
 
   // Анатомия: какие мышцы работали и где нагрузка ушла не туда из-за ошибок.
   const load = {};
   for (const e of exs) for (const [m, v] of Object.entries(e.load())) load[m] = (load[m] || 0) + v;
   $('#sum-map').innerHTML = bodyMapSVG(load);
-  const ranked = Object.entries(load).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const ranked = Object.entries(load).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const max = ranked[0]?.[1] || 1;
   $('#sum-muscles').innerHTML = ranked.map(([id, v]) =>
     `<li style="--v:${(v / max).toFixed(2)}"><span>${MUSCLES[id].ru}</span><i lang="la">${MUSCLES[id].la}</i></li>`).join('');
@@ -424,15 +606,22 @@ function finishWorkout() {
   for (const e of exs) {
     for (const [code, n] of Object.entries(e.faultCounts)) {
       for (const m of Object.keys(e.loadPerFault?.[code] || {})) {
-        notes.push(`${MUSCLES[m].ru} получила лишнюю нагрузку: ${e.describe(code, e.faultSides[code]).what.toLowerCase()} (${n} ${plural(n, ['повтор', 'повтора', 'повторов'])}).`);
+        const why = e.describe(code, e.faultSides[code]).what.toLowerCase();
+        notes.push(`Лишняя нагрузка: ${MUSCLES[m].ru.toLowerCase()}. Причина — ${why} (${n} ${plural(n, ['повтор', 'повтора', 'повторов'])}).`);
       }
     }
   }
   $('#sum-notes').textContent = notes.join(' ');
 
+  $('#sum-snaps').innerHTML = st.snaps.map((s) => `<figure class="snap">
+      <img src="${s.img}" alt="Стоп-кадр: ${esc(s.what)}" width="${SNAP_W}" height="${SNAP_H}">
+      <figcaption><span class="snap-ex">${esc(s.exName)}</span><b>${esc(s.what)}</b><span>${esc(s.fix)}</span></figcaption>
+    </figure>`).join('');
+  $('#sum-snaps-wrap').hidden = !st.snaps.length;
+
   go('summary');
   sound.tone('done');
-  sound.say(`Тренировка завершена. ${score} ${plural(score, ['балл', 'балла', 'баллов'])}, техника ${tech} процентов`, { urgent: true, cooldown: 0 });
+  sound.say(`${exs.length > 1 ? 'Тренировка завершена' : 'Готово'}. ${score} ${plural(score, ['балл', 'балла', 'баллов'])}, техника ${tech} процентов`, { urgent: true, cooldown: 0 });
 }
 
 // ─── Прогресс
@@ -442,7 +631,8 @@ function showHistory() {
   $('#hist-best').textContent = list.length ? `Лучший результат — ${best} ${plural(best, ['балл', 'балла', 'баллов'])}` : '';
   $('#hist-list').innerHTML = list.length
     ? list.slice(0, 8).map((e) => `<li${e.score === best ? ' class="best"' : ''}>
-        <time>${fmtDate(e.date)}</time><span class="h-score">${e.score}</span>
+        <span class="h-when"><time>${fmtDate(e.date)}</time><span>${esc(e.title || 'Тренировка')}</span></span>
+        <span class="h-score">${e.score}</span>
         <span>техника ${e.tech}%</span><span>${e.total} ${plural(e.total, ['повтор', 'повтора', 'повторов'])}</span></li>`).join('')
     : '<li class="empty">Здесь появятся твои тренировки. Вернись в меню и подними правую руку, чтобы начать первую.</li>';
   $('#hist-chart').innerHTML = sparkline(list.slice(0, 10).reverse().map((e) => e.tech));
@@ -456,7 +646,8 @@ function sparkline(values) {
   const pts = values.map((v, i) => [p + (i * (w - 2 * p)) / (values.length - 1), h - p - (v / 100) * (h - 2 * p)]);
   const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
   const [lx, ly] = pts[pts.length - 1];
-  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Техника по последним тренировкам">
+  return `<p class="hist-sub">Техника по последним тренировкам</p>
+    <svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Техника по последним тренировкам">
     <path d="${d}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
     <circle cx="${lx}" cy="${ly}" r="4" fill="var(--muscle)"/></svg>`;
 }
@@ -492,11 +683,12 @@ function render(now) {
     drawBones(ctx, S, 0.35);
     drawMuscles(ctx, S, Object.fromEntries(st.ex.muscles.map((m) => [m, glow])), new Set(), now);
     drawJoints(ctx, S);
-  } else if (['menu', 'summary', 'history'].includes(st.screen)) {
-    const quiet = st.screen !== 'menu';
+  } else if (['menu', 'catalog', 'summary', 'history'].includes(st.screen)) {
+    const quiet = st.screen === 'summary' || st.screen === 'history';
     drawBones(ctx, S, quiet ? 0.18 : 0.45);
     drawJoints(ctx, S, quiet ? 0.3 : 0.8);
-    drawHandHold(ctx, S, { left: st.holds.left / HOLD_SEC, right: st.holds.right / HOLD_SEC });
+    const both = st.holds.both / BOTH_SEC;
+    drawHandHold(ctx, S, { left: Math.max(st.holds.left / HOLD_SEC, both), right: Math.max(st.holds.right / HOLD_SEC, both) });
   }
 }
 

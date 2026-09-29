@@ -67,10 +67,10 @@ export const CONFIG = {
   jacks: {
     target: 12,
     armsOpen: 100,   // угол «корпус — плечо», градусы
-    armsClosed: 55,
+    armsClosed: 70,  // закрытие мягче открытия: короткую фазу «ноги вместе» не пропустим даже при 8 кадрах/с
     armsGood: 140,
     feetOpen: 1.3,   // расстояние между стопами / ширина плеч
-    feetClosed: 1.05,
+    feetClosed: 1.15,
     feetGood: 1.5,
     minRepMs: 350,
   },
@@ -116,6 +116,9 @@ class Exercise {
   }
 
   get done() { return this.total >= this.target; }
+
+  // Идёт повтор (человек не в исходном положении). Пока так — жест пропуска не копится.
+  get busy() { return !!this.rep; }
 
   describe(code, side) {
     const f = this.FAULTS[code];
@@ -478,6 +481,8 @@ export class HighKnees extends Exercise {
     this.sway = new Streak();
   }
 
+  get busy() { return !!(this.legs.left.rep || this.legs.right.rep); }
+
   update({ P, frame, t, dt }) {
     const C = this.cfg;
     const events = [];
@@ -768,8 +773,8 @@ export class JumpingJacks extends Exercise {
   constructor(cfg = CONFIG.jacks) {
     super(cfg);
     this.state = 'closed';
-    this.emaA = new Ema(0.6);
-    this.emaF = new Ema(0.6);
+    this.emaA = new Ema(0.75);
+    this.emaF = new Ema(0.75);
   }
 
   update({ P, frame, t }) {

@@ -30,7 +30,7 @@
         <ol class="steps">
           <li>Поставь ноутбук или телефон на уровне пояса и отойди на 2–3 метра.</li>
           <li>Чтобы выбрать пункт, подними руку над головой и подержи секунду.</li>
-          <li>Три упражнения: приседания, разведение рук, подъём коленей.</li>
+          <li>Шесть упражнений. Если ошибёшься в технике, тренер скажет, что не так и как исправить.</li>
         </ol>
         <button id="start" class="btn" type="button">Включить камеру</button>
         <p class="note">Видео обрабатывается прямо в браузере и никуда не отправляется.</p>
@@ -51,15 +51,46 @@
       <p class="menu-title">Подними руку над головой и подержи секунду</p>
       <p class="status" id="menu-status" aria-live="polite"></p>
     </header>
-    <button class="gesture" data-side="left" data-action="history" type="button">
+    <button class="gesture" data-side="left" data-action="catalog" type="button">
       <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l9 8M24 20l-8-15"/></svg>
-      <span class="g-label">Мой прогресс</span>
+      <span class="g-label">Выбрать упражнение</span>
       <span class="g-hand">Левая рука вверх</span>
     </button>
     <button class="gesture" data-side="right" data-action="start" type="button">
       <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-9 8M24 20l8-15"/></svg>
-      <span class="g-label">Начать тренировку</span>
+      <span class="g-label">Полная тренировка</span>
       <span class="g-hand">Правая рука вверх</span>
+    </button>
+    <button class="gesture gesture--both" data-side="both" data-action="history" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-8-15M24 20l8-15"/></svg>
+      <span class="g-label">Мой прогресс</span>
+      <span class="g-hand">Обе руки вверх</span>
+    </button>
+  </section>
+
+  <!-- Каталог: левая рука листает, правая запускает -->
+  <section class="panel" data-panel="catalog">
+    <header class="menu-head">
+      <p class="brand">AnatoMove</p>
+      <p class="menu-title">Выбери упражнение</p>
+      <p class="status ok">Левая рука — листать, правая — начать</p>
+    </header>
+    <ol class="catalog" id="catalog"></ol>
+    <button class="gesture" data-side="left" data-action="next" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l9 8M24 20l-8-15"/></svg>
+      <span class="g-label">Листать</span>
+      <span class="g-hand">Левая рука вверх</span>
+    </button>
+    <button class="gesture" data-side="right" data-action="pick" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-9 8M24 20l8-15"/></svg>
+      <span class="g-label">Начать</span>
+      <span class="g-pick" id="cat-pick"></span>
+      <span class="g-hand">Правая рука вверх</span>
+    </button>
+    <button class="gesture gesture--both" data-side="both" data-action="menu" type="button">
+      <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-8-15M24 20l8-15"/></svg>
+      <span class="g-label">Назад в меню</span>
+      <span class="g-hand">Обе руки вверх</span>
     </button>
   </section>
 
@@ -71,6 +102,7 @@
       <p class="tr-how" id="tr-how"></p>
       <p class="tr-sub">Работают мышцы</p>
       <ul class="muscle-list" id="tr-muscles"></ul>
+      <p class="tr-fact"><span>Знаешь ли ты?</span> <span id="tr-fact"></span></p>
       <p class="tr-wait" id="tr-wait" aria-live="polite"></p>
     </div>
     <p class="countdown" id="tr-count" aria-live="assertive"></p>
@@ -87,6 +119,7 @@
         <span class="hud-num" id="hud-count">0</span>
         <span class="hud-of" id="hud-target"></span>
         <span class="hud-clean" id="hud-clean"></span>
+        <span class="hud-streak" id="hud-streak"></span>
       </div>
     </header>
     <div class="hint" id="hint" aria-live="assertive">
@@ -94,19 +127,20 @@
       <p class="hint-what" id="hint-what"></p>
       <p class="hint-fix" id="hint-fix"></p>
     </div>
-    <p class="skip" id="skip">Обе руки высоко над головой на 2 секунды — пропустить упражнение</p>
+    <p class="skip" id="skip">Скрести руки на груди и подержи 2 секунды — пропустить упражнение</p>
   </section>
 
   <!-- Итоги -->
   <section class="panel" data-panel="summary">
     <div class="sheet summary">
       <div class="sum-main">
-        <p class="tr-step">Тренировка завершена</p>
+        <p class="tr-step" id="sum-title">Тренировка завершена</p>
         <p class="sum-score"><span id="sum-score"></span> <span id="sum-score-unit"></span></p>
         <p class="sum-record" id="sum-record"></p>
         <dl class="sum-stats">
           <div><dt>Техника</dt><dd id="sum-tech"></dd></div>
-          <div><dt>Чистые повторы</dt><dd id="sum-reps"></dd></div>
+          <div><dt>Чистые</dt><dd id="sum-reps"></dd></div>
+          <div><dt>Серия</dt><dd id="sum-streak"></dd></div>
           <div><dt>Время</dt><dd id="sum-time"></dd></div>
         </dl>
         <ol class="sum-ex" id="sum-ex"></ol>
@@ -118,13 +152,18 @@
           <p class="sum-notes" id="sum-notes"></p>
         </figcaption>
       </figure>
+      <section class="snaps" id="sum-snaps-wrap" hidden>
+        <p class="tr-sub">Стоп-кадры ошибок</p>
+        <div class="snaps-grid" id="sum-snaps"></div>
+        <p class="note">Кадры живут только до перезагрузки страницы и никуда не отправляются.</p>
+      </section>
     </div>
     <button class="gesture" data-side="left" data-action="menu" type="button">
       <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l9 8M24 20l-8-15"/></svg>
       <span class="g-label">В меню</span>
       <span class="g-hand">Левая рука вверх</span>
     </button>
-    <button class="gesture" data-side="right" data-action="start" type="button">
+    <button class="gesture" data-side="right" data-action="again" type="button">
       <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="9" r="5"/><path d="M24 15v17M24 32l-6 12M24 32l6 12M24 20l-9 8M24 20l8-15"/></svg>
       <span class="g-label">Ещё раз</span>
       <span class="g-hand">Правая рука вверх</span>
