@@ -18,10 +18,11 @@ export const CONFIG = {
     shift: 0.35,     // смещение таза от центра стоп, доля ширины таза
     minStance: 0.5,  // стопы почти вместе — колени оценить нельзя
     sustain: 4,      // столько кадров подряд, чтобы ошибка засчиталась
-    minRepMs: 500,
+    minRepMs: 350,   // быстрее — это дрожание точек, а не повтор
+    fastMs: 900,     // весь повтор быстрее — «слишком быстро»
   },
   raise: {
-    target: 10,
+    target: 8,
     enter: 45,       // угол «корпус — плечо» (отведение руки), градусы
     exit: 30,
     low: 75,         // средний пик ниже — руки не дошли до плеч
@@ -31,15 +32,47 @@ export const CONFIG = {
     shrug: 0.72,     // шея в кадре короче 72% от исходной — плечи к ушам
     sustain: 4,
     minRepMs: 600,
+    fastMs: 1000,
   },
   knees: {
-    target: 16,      // всего, на обе ноги
+    target: 12,      // всего, на обе ноги
     enter: 0.3,      // подъём колена: 0 — стоит, 1 — бедро параллельно полу
     exit: 0.15,
     good: 0.6,
     sway: 12,        // отклонение корпуса вбок, градусы
     sustain: 4,
     minRepMs: 250,
+  },
+  press: {
+    target: 8,
+    enter: 0.72,     // подъём кистей: (плечо − кисть) / длина руки. 1 — руки прямо над головой
+    exit: 0.5,
+    lock: 150,       // угол в локте наверху меньше — руки не выпрямлены
+    asym: 0.18,
+    shrug: 0.72,
+    sustain: 4,
+    minRepMs: 600,
+    fastMs: 900,
+  },
+  bend: {
+    target: 8,       // всего, на обе стороны
+    enter: 10,       // наклон корпуса вбок, градусы
+    exit: 5,
+    good: 18,
+    forward: 0.82,   // корпус в кадре короче 82% — наклон ушёл вперёд
+    hips: 0.5,       // таз сместился от центра стоп больше чем на половину ширины таза
+    sustain: 4,
+    minRepMs: 500,
+  },
+  jacks: {
+    target: 12,
+    armsOpen: 100,   // угол «корпус — плечо», градусы
+    armsClosed: 55,
+    armsGood: 140,
+    feetOpen: 1.3,   // расстояние между стопами / ширина плеч
+    feetClosed: 1.05,
+    feetGood: 1.5,
+    minRepMs: 350,
   },
   minBodyHeight: 0.35, // доля высоты кадра, меньше — человек слишком далеко
 };
@@ -52,6 +85,14 @@ export const SETUP = {
   far:    { what: 'Ты слишком далеко', fix: 'Подойди на шаг ближе к камере', say: 'Подойди ближе' },
   turn:   { what: 'Ты стоишь боком', fix: 'Повернись к камере лицом', say: 'Повернись лицом к камере' },
   stance: { what: 'Стопы стоят вплотную', fix: 'Поставь стопы на ширину плеч, носки чуть наружу', say: 'Поставь стопы на ширину плеч' },
+};
+
+// Общая для нескольких упражнений ошибка темпа.
+const FAST = {
+  what: 'Слишком быстро',
+  fix: 'Медленнее: 2 секунды вниз, 1 — вверх. Пусть работают мышцы, а не инерция',
+  say: 'Медленнее',
+  joints: () => [],
 };
 
 const pick = (v, side) => (typeof v === 'function' ? v(side) : v);
@@ -70,6 +111,8 @@ class Exercise {
     this.metrics = {};       // для режима ?debug
     this.rep = null;
     this.skipped = false;
+    this.streak = 0;         // чистых повторов подряд
+    this.bestStreak = 0;
   }
 
   get done() { return this.total >= this.target; }
@@ -96,15 +139,26 @@ class Exercise {
   finishRep(events, rep = this.rep) {
     this.total++;
     const clean = rep.faults.size === 0;
-    if (clean) this.clean++;
+    if (clean) {
+      this.clean++;
+      this.streak++;
+      this.bestStreak = Math.max(this.bestStreak, this.streak);
+    } else {
+      this.streak = 0;
+    }
     for (const [code, side] of rep.faults) {
       this.faultCounts[code] = (this.faultCounts[code] || 0) + 1;
       this.faultSides[code] = side;
     }
     events.push({
-      type: 'rep', clean, total: this.total, cleanTotal: this.clean,
+      type: 'rep', clean, total: this.total, cleanTotal: this.clean, streak: this.streak,
       faults: [...rep.faults.entries()].map(([c, s]) => this.describe(c, s)),
     });
+  }
+
+  // Весь повтор занял меньше fastMs — движение на инерции.
+  checkTempo(rep, t, events) {
+    if (this.cfg.fastMs && t - rep.start < this.cfg.fastMs) this.flag('fast', null, events, rep);
   }
 
   idle() {
@@ -117,7 +171,9 @@ class Exercise {
     const core = [L.L_SHOULDER, L.R_SHOULDER, L.L_HIP, L.R_HIP];
     if (!allSeen(P, core, frame)) return 'nobody';
     if (lower && !allSeen(P, [L.L_KNEE, L.R_KNEE, L.L_ANKLE, L.R_ANKLE], frame)) return 'feet';
-    if (upper && !allSeen(P, [L.L_ELBOW, L.R_ELBOW, L.L_WRIST, L.R_WRIST], frame)) return 'upper';
+    // upper: 'elbows' — кисти могут уходить за верх кадра (руки над головой), нужны только локти.
+    const arms = upper === 'elbows' ? [L.L_ELBOW, L.R_ELBOW] : [L.L_ELBOW, L.R_ELBOW, L.L_WRIST, L.R_WRIST];
+    if (upper && !allSeen(P, arms, frame)) return 'upper';
     const sw = dist(P[L.L_SHOULDER], P[L.R_SHOULDER]);
     const torso = dist(mid(P[L.L_SHOULDER], P[L.R_SHOULDER]), mid(P[L.L_HIP], P[L.R_HIP]));
     if (sw < torso * 0.45) return 'turn';
@@ -146,6 +202,7 @@ export class Squat extends Exercise {
   name = 'Приседания';
   needs = { lower: true };
   how = 'Стопы на ширине плеч, лицом к камере. Опускайся, будто садишься на стул, и возвращайся вверх.';
+  fact = 'Четыре головки четырёхглавой мышцы сходятся в одно сухожилие, внутри которого лежит надколенник — самая крупная сесамовидная кость тела.';
   muscles = ['quads', 'glutes', 'adductors', 'erectors'];
   loadPerRep = { quads: 1, glutes: 0.9, adductors: 0.6, erectors: 0.4 };
   loadPerFault = { lean: { erectors: 0.6 } };
@@ -176,6 +233,7 @@ export class Squat extends Exercise {
       say: 'Садись глубже',
       joints: () => [L.L_HIP, L.R_HIP],
     },
+    fast: FAST,
   };
 
   constructor(cfg = CONFIG.squat) {
@@ -244,6 +302,7 @@ export class Squat extends Exercise {
       if (depth > C.exit) {
         if (t - rep.start >= C.minRepMs) {
           if (rep.min > C.good) this.flag('shallow', null, events);
+          this.checkTempo(rep, t, events);
           this.finishRep(events);
         }
         this.state = 'up';
@@ -264,6 +323,7 @@ export class LateralRaise extends Exercise {
   name = 'Разведение рук в стороны';
   needs = { upper: true };
   how = 'Руки вдоль тела, лицом к камере. Разводи прямые руки в стороны до уровня плеч и медленно опускай.';
+  fact = 'Примерно до горизонтали руку поднимает дельтовидная мышца, а выше в работу включается поворот лопатки — его обеспечивают трапециевидная и передняя зубчатая мышцы.';
   muscles = ['deltoids', 'traps'];
   loadPerRep = { deltoids: 1, traps: 0.3 };
   loadPerFault = { high: { traps: 0.7 }, shrug: { traps: 0.6 } };
@@ -301,6 +361,7 @@ export class LateralRaise extends Exercise {
       joints: () => [L.L_SHOULDER, L.R_SHOULDER],
       muscles: ['traps'],
     },
+    fast: FAST,
   };
 
   constructor(cfg = CONFIG.raise) {
@@ -357,6 +418,7 @@ export class LateralRaise extends Exercise {
         if (t - rep.start >= C.minRepMs) {
           if (Math.abs(rep.maxL - rep.maxR) > C.asym) this.flag('asym', rep.maxL < rep.maxR ? 'left' : 'right', events);
           else if ((rep.maxL + rep.maxR) / 2 < C.low) this.flag('low', null, events);
+          this.checkTempo(rep, t, events);
           this.finishRep(events);
         }
         this.state = 'down';
@@ -380,6 +442,7 @@ export class HighKnees extends Exercise {
   name = 'Подъём коленей';
   needs = { lower: true };
   how = 'Лицом к камере, спина прямая. Поочерёдно поднимай колени до уровня таза, как при ходьбе на месте.';
+  fact = 'Подвздошно-поясничная мышца — единственная, что соединяет позвоночник с бедренной костью. Это главный сгибатель бедра.';
   muscles = ['iliopsoas', 'quads', 'abs'];
   loadPerRep = { iliopsoas: 0.55, quads: 0.3, abs: 0.3 };
   loadPerFault = { sway: { abs: 0.2 } };
@@ -466,4 +529,295 @@ export class HighKnees extends Exercise {
   }
 }
 
-export const makeWorkout = () => [new Squat(), new LateralRaise(), new HighKnees()];
+// ─────────────────────────────────────────────── Жим руками вверх
+export class OverheadPress extends Exercise {
+  id = 'press';
+  name = 'Жим руками вверх';
+  needs = { upper: true };
+  how = 'Лицом к камере. Локти на уровне плеч, кисти смотрят вверх. Выпрями руки над головой и вернись.';
+  fact = 'Трёхглавая мышца занимает почти всю заднюю поверхность плеча и разгибает локоть: без неё руки над головой не выпрямить.';
+  muscles = ['deltoids', 'triceps', 'traps'];
+  loadPerRep = { deltoids: 0.9, triceps: 0.8, traps: 0.3 };
+  loadPerFault = { shrug: { traps: 0.6 } };
+
+  FAULTS = {
+    lockout: {
+      what: 'Руки не выпрямляются до конца',
+      fix: 'В верхней точке полностью выпрями локти — кисти над плечами',
+      say: 'Выпрями руки до конца',
+      joints: () => [L.L_ELBOW, L.R_ELBOW],
+    },
+    asym: {
+      what: (s) => `${leftRight(s, 'Левая', 'Правая')} рука отстаёт`,
+      fix: 'Выжимай обе руки одновременно и на одну высоту',
+      say: (s) => `${leftRight(s, 'Левую', 'Правую')} руку выше`,
+      joints: (s) => leftRight(s, [L.L_ELBOW, L.L_WRIST], [L.R_ELBOW, L.R_WRIST]),
+    },
+    shrug: {
+      what: 'Плечи поднимаются к ушам',
+      fix: 'Держи плечи опущенными — жми руками, а не шеей',
+      say: 'Опусти плечи',
+      joints: () => [L.L_SHOULDER, L.R_SHOULDER],
+      muscles: ['traps'],
+    },
+    fast: FAST,
+  };
+
+  constructor(cfg = CONFIG.press) {
+    super(cfg);
+    this.state = 'down';
+    this.emaL = new Ema(0.5);
+    this.emaR = new Ema(0.5);
+    this.neckBase = null;
+    this.s = { shrug: new Streak() };
+  }
+
+  update({ P, frame, t }) {
+    const C = this.cfg;
+    const events = [];
+    const setup = this.positioning(P, frame, this.needs);
+    if (setup) { this.idle(); return { events, setup }; }
+
+    const Ls = P[L.L_SHOULDER], Rs = P[L.R_SHOULDER];
+    const Le = P[L.L_ELBOW], Re = P[L.R_ELBOW], Lw = P[L.L_WRIST], Rw = P[L.R_WRIST];
+    // Подъём кисти относительно плеча в долях длины руки: −1 — рука внизу, 1 — прямо над головой.
+    const liftL = this.emaL.next((Ls.y - Lw.y) / Math.max(1, dist(Ls, Le) + dist(Le, Lw)));
+    const liftR = this.emaR.next((Rs.y - Rw.y) / Math.max(1, dist(Rs, Re) + dist(Re, Rw)));
+    const lift = (liftL + liftR) / 2;
+    const elbL = angle(Ls, Le, Lw), elbR = angle(Rs, Re, Rw);
+
+    let neck = null;
+    if (seen(P, L.L_EAR, frame) && seen(P, L.R_EAR, frame)) {
+      neck = (mid(Ls, Rs).y - mid(P[L.L_EAR], P[L.R_EAR]).y) / Math.max(1, dist(Ls, Rs));
+      if (this.state === 'down') {
+        this.neckBase = this.neckBase === null ? neck : this.neckBase + (neck - this.neckBase) * 0.05;
+      }
+    }
+    this.metrics = { state: this.state, liftL, liftR, elbowL: elbL, elbowR: elbR, neck, neckBase: this.neckBase };
+
+    if (this.state === 'down' && lift > C.enter) {
+      this.state = 'up';
+      this.rep = { start: t, lock: Math.min(elbL, elbR), maxL: liftL, maxR: liftR, faults: new Map() };
+      this.s.shrug.n = 0;
+    }
+
+    this.live.clear();
+    if (this.state === 'up') {
+      const rep = this.rep;
+      rep.lock = Math.max(rep.lock, Math.min(elbL, elbR));
+      rep.maxL = Math.max(rep.maxL, liftL);
+      rep.maxR = Math.max(rep.maxR, liftR);
+      if (neck !== null && this.neckBase && this.s.shrug.push(neck < this.neckBase * C.shrug) >= C.sustain) {
+        this.flag('shrug', null, events);
+      }
+      if (lift < C.exit) {
+        if (t - rep.start >= C.minRepMs) {
+          if (rep.lock < C.lock) this.flag('lockout', null, events);
+          if (Math.abs(rep.maxL - rep.maxR) > C.asym) this.flag('asym', rep.maxL < rep.maxR ? 'left' : 'right', events);
+          this.checkTempo(rep, t, events);
+          this.finishRep(events);
+        }
+        this.state = 'down';
+        this.rep = null;
+        this.live.clear();
+      }
+    }
+
+    const straight = clamp((Math.min(elbL, elbR) - 80) / 90);
+    this.activation = {
+      deltoids: clamp((lift + 0.3) / 1.1),
+      triceps: lift > 0.2 ? straight : straight * 0.3,
+      traps: clamp(clamp((lift - 0.6) / 0.4) * 0.6 + (this.live.has('shrug') ? 0.5 : 0)),
+    };
+    return { events, setup: null };
+  }
+}
+
+// ─────────────────────────────────────────────── Боковые наклоны
+export class SideBend extends Exercise {
+  id = 'bend';
+  name = 'Боковые наклоны';
+  needs = { lower: true };
+  how = 'Стопы на ширине плеч, руки вдоль тела. Наклоняйся поочерёдно влево и вправо — ладонь скользит по бедру.';
+  fact = 'Волокна наружной косой мышцы живота идут вниз и к центру — так же, как пальцы рук, засунутых в карманы куртки.';
+  muscles = ['obliques', 'ql'];
+  loadPerRep = { obliques: 0.6, ql: 0.45 };
+  loadPerFault = { forward: { erectors: 0.5 } };
+
+  FAULTS = {
+    shallow: {
+      what: (s) => `Слабый наклон ${leftRight(s, 'влево', 'вправо')}`,
+      fix: 'Наклоняйся глубже — ладонь скользит по бедру почти до колена',
+      say: 'Наклон глубже',
+      joints: (s) => leftRight(s, [L.L_SHOULDER], [L.R_SHOULDER]),
+    },
+    forward: {
+      what: 'Корпус уходит вперёд',
+      fix: 'Наклоняйся строго в сторону — будто стоишь между двумя стёклами',
+      say: 'Строго в сторону, не вперёд',
+      joints: () => [L.L_SHOULDER, L.R_SHOULDER],
+      muscles: ['erectors'],
+    },
+    hips: {
+      what: 'Таз уезжает в сторону',
+      fix: 'Держи таз над стопами — наклон идёт только в пояснице',
+      say: 'Таз на месте',
+      joints: () => [L.L_HIP, L.R_HIP],
+    },
+    alternate: {
+      what: (s) => `Три раза подряд наклон ${leftRight(s, 'влево', 'вправо')}`,
+      fix: (s) => `Чередуй стороны — сейчас наклон ${leftRight(s, 'вправо', 'влево')}`,
+      say: (s) => `Теперь ${leftRight(s, 'вправо', 'влево')}`,
+      joints: () => [],
+    },
+  };
+
+  constructor(cfg = CONFIG.bend) {
+    super(cfg);
+    this.state = 'center';
+    this.side = null;
+    this.ema = new Ema(0.5);
+    this.ref = new DecayingMax();
+    this.lastSide = null;
+    this.sameRun = 0;
+    this.s = { forward: new Streak(), hips: new Streak() };
+  }
+
+  update({ P, frame, t, dt }) {
+    const C = this.cfg;
+    const events = [];
+    const setup = this.positioning(P, frame, this.needs);
+    if (setup) { this.idle(); return { events, setup }; }
+
+    const ms = mid(P[L.L_SHOULDER], P[L.R_SHOULDER]);
+    const mh = mid(P[L.L_HIP], P[L.R_HIP]);
+    const ma = mid(P[L.L_ANKLE], P[L.R_ANKLE]);
+    // Знак: плечи ушли вправо по кадру (к левому боку человека) → наклон влево.
+    const tilt = this.ema.next((Math.atan2(ms.x - mh.x, mh.y - ms.y) * 180) / Math.PI);
+    // Наклон вбок не меняет длину корпуса в кадре, а наклон вперёд — укорачивает.
+    const torso = dist(ms, mh);
+    const ratio = torso / this.ref.update(torso, dt);
+    const shift = (mh.x - ma.x) / Math.max(1, dist(P[L.L_HIP], P[L.R_HIP]));
+    const abs = Math.abs(tilt);
+    this.metrics = { state: this.state, tilt, torso: ratio, shift };
+
+    if (this.state === 'center' && abs > C.enter) {
+      this.state = 'bent';
+      this.side = tilt > 0 ? 'left' : 'right';
+      this.rep = { start: t, peak: abs, faults: new Map() };
+      Object.values(this.s).forEach((s) => { s.n = 0; });
+    }
+
+    this.live.clear();
+    if (this.state === 'bent') {
+      const rep = this.rep;
+      rep.peak = Math.max(rep.peak, abs);
+      if (this.s.forward.push(ratio < C.forward) >= C.sustain) this.flag('forward', null, events);
+      if (this.s.hips.push(Math.abs(shift) > C.hips) >= C.sustain) this.flag('hips', null, events);
+      if (abs < C.exit) {
+        if (t - rep.start >= C.minRepMs) {
+          if (rep.peak < C.good) this.flag('shallow', this.side, events);
+          if (this.lastSide === this.side) this.sameRun++;
+          else { this.lastSide = this.side; this.sameRun = 1; }
+          if (this.sameRun >= 3) this.flag('alternate', this.side, events);
+          this.finishRep(events);
+        }
+        this.state = 'center';
+        this.rep = null;
+        this.live.clear();
+      }
+    }
+
+    // Наклон влево контролируют мышцы правого бока: они растягиваются и возвращают корпус.
+    const a = clamp(abs / 25);
+    let obl = { left: a * 0.3, right: a * 0.3 };
+    if (this.state === 'bent') {
+      const far = this.side === 'left' ? 'right' : 'left';
+      obl = { [far]: a, [this.side]: a * 0.45 };
+    }
+    this.activation = { obliques: obl, ql: { left: obl.left * 0.8, right: obl.right * 0.8 } };
+    return { events, setup: null };
+  }
+}
+
+// ─────────────────────────────────────────────── Прыжки «звёздочка»
+export class JumpingJacks extends Exercise {
+  id = 'jacks';
+  name = 'Прыжки «звёздочка»';
+  needs = { lower: true, upper: 'elbows' };
+  how = 'Лицом к камере. В прыжке разведи ноги шире плеч и подними руки через стороны над головой, затем вернись.';
+  fact = 'Икроножная мышца — двусуставная: она проходит и через коленный, и через голеностопный сустав, поэтому пружинит в каждом прыжке.';
+  muscles = ['deltoids', 'gmed', 'calves', 'adductors'];
+  loadPerRep = { deltoids: 0.5, gmed: 0.6, calves: 0.7, adductors: 0.4 };
+
+  FAULTS = {
+    arms: {
+      what: 'Руки не доходят до верха',
+      fix: 'Поднимай руки через стороны до конца — кисти над головой',
+      say: 'Руки выше, над головой',
+      joints: () => [L.L_ELBOW, L.R_ELBOW],
+    },
+    legs: {
+      what: 'Ноги расходятся слишком узко',
+      fix: 'В прыжке ставь стопы шире плеч',
+      say: 'Ноги шире',
+      joints: () => [L.L_ANKLE, L.R_ANKLE],
+    },
+  };
+
+  constructor(cfg = CONFIG.jacks) {
+    super(cfg);
+    this.state = 'closed';
+    this.emaA = new Ema(0.6);
+    this.emaF = new Ema(0.6);
+  }
+
+  update({ P, frame, t }) {
+    const C = this.cfg;
+    const events = [];
+    const setup = this.positioning(P, frame, this.needs);
+    if (setup) { this.idle(); return { events, setup }; }
+
+    const Ls = P[L.L_SHOULDER], Rs = P[L.R_SHOULDER];
+    const arm = this.emaA.next((angle(P[L.L_HIP], Ls, P[L.L_ELBOW]) + angle(P[L.R_HIP], Rs, P[L.R_ELBOW])) / 2);
+    const feet = this.emaF.next(Math.abs(P[L.L_ANKLE].x - P[L.R_ANKLE].x) / Math.max(1, dist(Ls, Rs)));
+    this.metrics = { state: this.state, arm, feet };
+
+    if (this.state === 'closed' && (arm > C.armsOpen || feet > C.feetOpen)) {
+      this.state = 'open';
+      this.rep = { start: t, arm, feet, faults: new Map() };
+    }
+
+    this.live.clear();
+    if (this.state === 'open') {
+      const rep = this.rep;
+      rep.arm = Math.max(rep.arm, arm);
+      rep.feet = Math.max(rep.feet, feet);
+      if (arm < C.armsClosed && feet < C.feetClosed) {
+        if (t - rep.start >= C.minRepMs) {
+          if (rep.arm < C.armsGood) this.flag('arms', null, events);
+          if (rep.feet < C.feetGood) this.flag('legs', null, events);
+          this.finishRep(events);
+        }
+        this.state = 'closed';
+        this.rep = null;
+        this.live.clear();
+      }
+    }
+
+    const legs = clamp((feet - 0.8) / 0.8);
+    this.activation = {
+      deltoids: clamp((arm - 30) / 120),
+      gmed: legs,
+      adductors: legs * 0.6,
+      calves: this.state === 'open' ? 0.85 : 0.45,
+    };
+    return { events, setup: null };
+  }
+}
+
+// Каталог в порядке полной тренировки: от силовых к кардио.
+export const CATALOG = [Squat, LateralRaise, HighKnees, OverheadPress, SideBend, JumpingJacks];
+export const byId = (id) => CATALOG.find((C) => new C().id === id);
+export const makeWorkout = (ids) =>
+  (ids ? ids.map((id) => byId(id)).filter(Boolean) : CATALOG).map((C) => new C());
