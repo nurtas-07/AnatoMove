@@ -4,10 +4,12 @@
 let ctx = null;
 let muted = false;
 let voice = null;
+let voicesLoaded = false;
 const lastSaid = new Map();
 
 function pickVoice() {
   const all = window.speechSynthesis?.getVoices?.() || [];
+  voicesLoaded = all.length > 0;
   const ru = all.filter((v) => /^ru/i.test(v.lang));
   voice = ru.find((v) => /google|milena|yuri|irina|pavel|svetlana|dmitry/i.test(v.name)) || ru[0] || null;
 }
@@ -22,6 +24,7 @@ export function initAudio() {
 }
 
 export const isMuted = () => muted;
+export const stopSpeech = () => window.speechSynthesis?.cancel();
 export function setMuted(m) {
   muted = m;
   if (m) window.speechSynthesis?.cancel();
@@ -51,6 +54,8 @@ export function tone(kind) {
 // urgent — перебить то, что говорится сейчас (подсказки по технике важнее счёта).
 export function say(text, { urgent = false, cooldown = 4000 } = {}) {
   if (muted || !text || !('speechSynthesis' in window)) return;
+  // Нет русского голоса — лучше промолчать, чем читать кириллицу чужим голосом. Сигналы останутся.
+  if (voicesLoaded && !voice) return;
   const now = performance.now();
   if (now - (lastSaid.get(text) ?? -Infinity) < cooldown) return;
   const synth = window.speechSynthesis;

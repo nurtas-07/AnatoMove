@@ -1,7 +1,7 @@
 // Камера и модель MediaPipe Pose Landmarker. Всё работает в браузере, видео никуда не отправляется.
 
-const MP_VERSION = '1.0.1'; // если CDN не отдаёт эту версию — поменяй на '0.10.35'
-const MP_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+// Если основная версия библиотеки не загрузится с CDN, пробуем запасную.
+const MP_VERSIONS = ['1.0.1', '0.10.35'];
 const MODELS = {
   lite: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
   full: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
@@ -33,31 +33,43 @@ export async function startCamera(video) {
   return stream;
 }
 
-export async function createPoseDetector(kind = pickModel()) {
-  let vision;
-  try {
-    vision = await import(`${MP_URL}/vision_bundle.mjs`);
-  } catch (e) {
-    throw Object.assign(e, { code: 'model' });
+async function loadVision() {
+  let lastError;
+  for (const v of MP_VERSIONS) {
+    const base = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}`;
+    try {
+      const mod = await import(`${base}/vision_bundle.mjs`);
+      const fileset = await mod.FilesetResolver.forVisionTasks(`${base}/wasm`);
+      return { PoseLandmarker: mod.PoseLandmarker, fileset };
+    } catch (e) {
+      console.warn(`MediaPipe ${v} не загрузился`, e);
+      lastError = e;
+    }
   }
-  const { FilesetResolver, PoseLandmarker } = vision;
-  const fileset = await FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
-  const options = (delegate) => ({
-    baseOptions: { modelAssetPath: MODELS[kind], delegate },
+  throw Object.assign(lastError || new Error('model'), { code: 'model' });
+}
+
+export async function createPoseDetector(kind = pickModel()) {
+  const { PoseLandmarker, fileset } = await loadVision();
+  const options = (model, delegate) => ({
+    baseOptions: { modelAssetPath: MODELS[model], delegate },
     runningMode: 'VIDEO',
     numPoses: 1,
     minPoseDetectionConfidence: 0.5,
     minPosePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
   });
-  try {
-    return await PoseLandmarker.createFromOptions(fileset, options('GPU'));
-  } catch (e) {
-    console.warn('GPU недоступен, работаю на CPU', e);
+  // GPU → CPU, и если точная модель не загрузилась — лёгкая.
+  const attempts = [[kind, 'GPU'], [kind, 'CPU']];
+  if (kind !== 'lite') attempts.push(['lite', 'GPU'], ['lite', 'CPU']);
+  let lastError;
+  for (const [model, delegate] of attempts) {
     try {
-      return await PoseLandmarker.createFromOptions(fileset, options('CPU'));
-    } catch (e2) {
-      throw Object.assign(e2, { code: 'model' });
+      return await PoseLandmarker.createFromOptions(fileset, options(model, delegate));
+    } catch (e) {
+      console.warn(`Модель ${model} на ${delegate} не запустилась`, e);
+      lastError = e;
     }
   }
+  throw Object.assign(lastError || new Error('model'), { code: 'model' });
 }
